@@ -89,6 +89,19 @@ public class ExplodedBlock {
         CreeperPlugin.instance().explosionManager().freeBlock(this.location);
         Block block = this.location.getBlock();
 
+        // Don't recover over anything placed in the crater since the blast (e.g. GravesX graves,
+        // player rebuilds). The crater is normally air (or has liquid seep in) at restore time, so
+        // only restore over air/liquid. Anything else means a block now occupies this location and
+        // restoring would overwrite (and destroy) it. Material.isAir()/Block.isLiquid() keep this
+        // on the Spigot API so it stays portable across the spigot and folia modules.
+        if (!block.getType().isAir() && !block.isLiquid()) {
+            CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
+                    "Skipped recovery at %s - occupied by %s",
+                    this.location.toString(),
+                    block.getType().name()));
+            return;
+        }
+
         CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
                 "Recovering block: %s at %s",
                 this.material.name(),
