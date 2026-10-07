@@ -54,7 +54,9 @@ import org.bukkit.block.Sign;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.inventory.DoubleChestInventory;
+import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
@@ -97,12 +99,19 @@ public class Explosion {
                     block.getBlockData().clone());
             if (block.getState() instanceof InventoryHolder holder) {
                 InventoryItems inventory = new InventoryItems();
-                for (int i = 0; i < holder.getInventory().getStorageContents().length; i++) {
-                    if (holder.getInventory().getStorageContents()[i] != null) {
-                        inventory.set(i, holder.getInventory().getStorageContents()[i].clone());
+                Inventory live = holder.getInventory();
+                ItemStack[] contents = live.getStorageContents();
+                for (int i = 0; i < contents.length; i++) {
+                    if (contents[i] != null) {
+                        inventory.set(i, contents[i].clone());
                     }
                 }
                 explodedBlock.addData(inventory);
+                // Empty the live container now that its contents are saved. Since 1.21.5 removing a
+                // container block spills its contents even through setType(AIR, false), and the
+                // recovery restores the saved copy, so leaving them in would duplicate everything.
+                // For a double chest this is the combined inventory and empties both halves.
+                live.clear();
             }
             if (block.getState() instanceof Chest chest) {
                 if (chest.getInventory() instanceof DoubleChestInventory doubleChestInventory) {
