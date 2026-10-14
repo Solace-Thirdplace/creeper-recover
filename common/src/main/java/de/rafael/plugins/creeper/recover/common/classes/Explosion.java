@@ -39,24 +39,22 @@ package de.rafael.plugins.creeper.recover.common.classes;
 //------------------------------
 
 import de.rafael.plugins.creeper.recover.common.CreeperPlugin;
-import de.rafael.plugins.creeper.recover.common.classes.data.InventoryItems;
-import de.rafael.plugins.creeper.recover.common.classes.data.sign.SignLines;
-import de.rafael.plugins.creeper.recover.common.classes.data.sign.SignStyle;
+import de.rafael.plugins.creeper.recover.common.classes.data.TileSnapshot;
 import de.rafael.plugins.creeper.recover.common.classes.list.BlockList;
 import de.rafael.plugins.creeper.recover.common.utils.MathUtils;
 import lombok.Getter;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockState;
 import org.bukkit.block.Chest;
 import org.bukkit.block.DoubleChest;
-import org.bukkit.block.Sign;
+import org.bukkit.block.TileState;
 
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.inventory.DoubleChestInventory;
-import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
-import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
@@ -97,51 +95,40 @@ public class Explosion {
             }
             ExplodedBlock explodedBlock = new ExplodedBlock(block.getLocation().clone(), block.getType(),
                     block.getBlockData().clone());
-            if (block.getState() instanceof InventoryHolder holder) {
-                InventoryItems inventory = new InventoryItems();
-                Inventory live = holder.getInventory();
-                ItemStack[] contents = live.getStorageContents();
-                for (int i = 0; i < contents.length; i++) {
-                    if (contents[i] != null) {
-                        inventory.set(i, contents[i].clone());
-                    }
+            // Bukkit hands out a snapshot copy of the block entity. Keeping it and re-applying it at
+            // recovery restores everything the tile held (banner patterns, both sign sides, waxed
+            // flag, pot sherds, container items, names, locks, persistent data). Snapshots are taken
+            // before the live inventory is cleared below, so they still hold the items.
+            BlockState state = block.getState();
+            if (state instanceof TileState) {
+                explodedBlock.addData(new TileSnapshot(state));
+            }
+            if (state instanceof Chest chest
+                    && chest.getInventory() instanceof DoubleChestInventory doubleChestInventory) {
+                DoubleChest doubleChest = doubleChestInventory.getHolder();
+
+                assert doubleChest != null;
+                Chest leftSide = (Chest) doubleChest.getLeftSide();
+                Chest rightSide = (Chest) doubleChest.getRightSide();
+                assert leftSide != null;
+                assert rightSide != null;
+                Block otherHalf = block.equals(leftSide.getBlock()) ? rightSide.getBlock()
+                        : block.equals(rightSide.getBlock()) ? leftSide.getBlock() : null;
+                if (otherHalf != null) {
+                    add.accept(otherHalf);
+                    ignore.accept(otherHalf);
+                    ExplodedBlock extraChest = new ExplodedBlock(otherHalf.getLocation().clone(),
+                            otherHalf.getType(), otherHalf.getBlockData().clone());
+                    extraChest.addData(new TileSnapshot(otherHalf.getState()));
+                    explodedBlock.connectBlock(extraChest);
                 }
-                explodedBlock.addData(inventory);
+            }
+            if (state instanceof InventoryHolder holder) {
                 // Empty the live container now that its contents are saved. Since 1.21.5 removing a
                 // container block spills its contents even through setType(AIR, false), and the
                 // recovery restores the saved copy, so leaving them in would duplicate everything.
                 // For a double chest this is the combined inventory and empties both halves.
-                live.clear();
-            }
-            if (block.getState() instanceof Chest chest) {
-                if (chest.getInventory() instanceof DoubleChestInventory doubleChestInventory) {
-                    DoubleChest doubleChest = doubleChestInventory.getHolder();
-
-                    assert doubleChest != null;
-                    Chest leftSide = (Chest) doubleChest.getLeftSide();
-                    Chest rightSide = (Chest) doubleChest.getRightSide();
-                    assert leftSide != null;
-                    assert rightSide != null;
-                    if (block.equals(leftSide.getBlock())) {
-                        add.accept(rightSide.getBlock());
-                        ignore.accept(rightSide.getBlock());
-                        ExplodedBlock extraChest = new ExplodedBlock(rightSide.getBlock().getLocation().clone(),
-                                rightSide.getBlock().getType(), rightSide.getBlock().getBlockData().clone());
-                        explodedBlock.connectBlock(extraChest);
-                    } else if (block.equals(rightSide.getBlock())) {
-                        add.accept(leftSide.getBlock());
-                        ignore.accept(leftSide.getBlock());
-                        ExplodedBlock extraChest = new ExplodedBlock(leftSide.getBlock().getLocation().clone(),
-                                leftSide.getBlock().getType(), leftSide.getBlock().getBlockData().clone());
-                        explodedBlock.connectBlock(extraChest);
-                    }
-                }
-            }
-            if (block.getState() instanceof Sign sign) {
-                // 1.19.4 compatible sign handling (single-sided signs only)
-                explodedBlock.addData(new SignLines(null, sign.getLines()));
-                explodedBlock.addData(new SignStyle(null, sign.getColor(), sign.isGlowingText()));
-                // Note: Sign waxing not supported in 1.19.4
+                holder.getInventory().clear();
             }
             explodedBlocks.add(explodedBlock);
         });

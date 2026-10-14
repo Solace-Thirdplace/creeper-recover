@@ -28,39 +28,24 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-package de.rafael.plugins.creeper.recover.common.classes.data.sign;
 
-//------------------------------
-//
-// This class was developed by Rafael K.
-// On 07/12/2022 at 9:47 PM
-// In the project CreeperRecover
-//
-//------------------------------
+package de.rafael.plugins.creeper.recover.common.classes.data;
 
-import de.rafael.plugins.creeper.recover.common.classes.data.IBlockData;
 import org.bukkit.block.Block;
-import org.bukkit.block.Sign;
-import org.bukkit.block.sign.Side;
+import org.bukkit.block.BlockState;
 
-public record SignLines(Side side, String[] lines) implements IBlockData {
+/**
+ * Snapshot of a block entity taken before the explosion removed it. Re-applying the snapshot with
+ * {@link BlockState#update(boolean, boolean)} copies the whole tile (banner patterns, both sign
+ * sides and the waxed flag, pot sherds, container items, names, locks, persistent data) onto the
+ * freshly placed block, so no per-block-type handling is needed.
+ */
+public record TileSnapshot(BlockState state) implements IBlockData {
 
     @Override
-    @SuppressWarnings("deprecation")
     public void apply(Block block, RecoverPhase phase) {
-        if (phase == RecoverPhase.POST_STATE_UPDATE && block.getState() instanceof Sign sign) {
-            if (side == null) {
-                // 1.19.4 compatible mode - use deprecated methods
-                for (int i = 0; i < lines.length; i++) {
-                    sign.setLine(i, lines[i]);
-                }
-            } else {
-                // 1.20+ mode - use side-based API
-                for (int i = 0; i < lines.length; i++) {
-                    sign.getSide(side).setLine(i, lines[i]);
-                }
-            }
-            sign.update(true, false);
+        if (phase == RecoverPhase.POST_STATE_UPDATE) {
+            state.update(true, false);
         }
     }
 
