@@ -119,7 +119,8 @@ public class EntityExplodeListener implements Listener {
             }
 
             // Store blocks
-            CreeperPlugin.instance().explosionManager().handle(new Explosion(event.getLocation().clone(), blocks));
+            CreeperPlugin.instance().explosionManager().handle(
+                    new Explosion(event.getLocation().clone(), blocks, event.getEntity()));
 
             CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
                     "Started recovery process for %d blocks",

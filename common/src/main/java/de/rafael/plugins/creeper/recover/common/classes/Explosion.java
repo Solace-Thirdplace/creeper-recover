@@ -43,6 +43,7 @@ import de.rafael.plugins.creeper.recover.common.classes.data.TileSnapshot;
 import de.rafael.plugins.creeper.recover.common.classes.list.BlockList;
 import de.rafael.plugins.creeper.recover.common.utils.MathUtils;
 import lombok.Getter;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -51,10 +52,13 @@ import org.bukkit.block.Chest;
 import org.bukkit.block.DoubleChest;
 import org.bukkit.block.TileState;
 
+import org.bukkit.entity.EnderDragon;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.inventory.DoubleChestInventory;
 import org.bukkit.inventory.InventoryHolder;
+import org.bukkit.util.BoundingBox;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.*;
@@ -65,9 +69,24 @@ public class Explosion {
 
     private final Location location;
     private final List<ExplodedBlock> blocks;
+    /** The Ender Dragon whose body knocked these blocks out, or null for any other explosion. */
+    private final UUID source;
+    /**
+     * Whether {@link #source} still sits on these blocks. A perched dragon knocks out the blocks
+     * under it every tick, so putting them back while it sits there only has it knock them out
+     * again, over and over (Wild, 2026-10-15). Starts true for a dragon so nothing is recovered
+     * before the first check; set on the main thread, read by the async recovery timer.
+     */
+    private volatile boolean held;
 
     public Explosion(Location location, @NotNull BlockList blocks) {
+        this(location, blocks, null);
+    }
+
+    public Explosion(Location location, @NotNull BlockList blocks, Entity source) {
         this.location = location;
+        this.source = source instanceof EnderDragon ? source.getUniqueId() : null;
+        this.held = this.source != null;
 
         List<ExplodedBlock> explodedBlocks = new ArrayList<>();
         blocks.forEach((block, ignore, add) -> {
@@ -136,6 +155,34 @@ public class Explosion {
                 .stream().sorted(Comparator
                         .comparingDouble(item -> ((ExplodedBlock) item).location().distance(location)).reversed())
                 .collect(Collectors.toCollection(ArrayList::new));
+    }
+
+    /** True while the dragon that caused this explosion is still on its blocks; see {@link #held}. */
+    public boolean heldBySource() {
+        return this.held;
+    }
+
+    /** Looks again, on the main thread, whether the source dragon is still on the blocks. */
+    public void refreshHold() {
+        if (this.source == null) {
+            return;
+        }
+        CreeperPlugin.scheduler().runOnCorrectThread(this.location, () -> {
+            Entity entity = Bukkit.getEntity(this.source);
+            this.held = entity != null && entity.isValid() && !entity.isDead() && touches(entity.getBoundingBox());
+        });
+    }
+
+    /** Whether {@code box}, grown by a block, reaches the centre of any block still to recover. */
+    private synchronized boolean touches(BoundingBox box) {
+        BoundingBox reach = box.clone().expand(1.0);
+        for (ExplodedBlock block : this.blocks) {
+            Location at = block.location();
+            if (reach.contains(at.getX() + 0.5, at.getY() + 0.5, at.getZ() + 0.5)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public synchronized boolean recoverBlock() {

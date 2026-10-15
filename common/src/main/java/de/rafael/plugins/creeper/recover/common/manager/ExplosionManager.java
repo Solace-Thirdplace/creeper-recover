@@ -59,6 +59,11 @@ public class ExplosionManager {
         explosion.blocks().forEach(explodedBlock -> this.suppressBlock(explodedBlock.location()));
         List<Explosion> explosions = Collections.singletonList(explosion);
         CreeperPlugin.scheduler().runAsyncAtFixedRate(cancel -> {
+            // A dragon still perched on the blocks: wait for it to move off (checked each period).
+            explosion.refreshHold();
+            if (explosion.heldBySource()) {
+                return;
+            }
             recoverBlocks(explosions, false, 1);
             if (explosion.isFinished())
                 cancel.run();
