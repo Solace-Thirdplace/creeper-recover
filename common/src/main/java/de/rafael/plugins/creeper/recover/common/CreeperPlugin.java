@@ -36,32 +36,43 @@ import de.rafael.plugins.creeper.recover.common.listener.EntityExplodeListener;
 import de.rafael.plugins.creeper.recover.common.manager.ConfigManager;
 import de.rafael.plugins.creeper.recover.common.manager.ExplosionManager;
 import de.rafael.plugins.creeper.recover.common.manager.MessageManager;
+import de.rafael.plugins.creeper.recover.common.scheduler.BukkitScheduler;
 import de.rafael.plugins.creeper.recover.common.stats.PluginStats;
 import de.rafael.plugins.creeper.recover.common.utils.version.PluginVersion;
 import de.rafael.plugins.creeper.recover.common.utils.version.UpdateChecker;
+import de.rafael.plugins.creeper.recover.shell.CreeperRecoverCore;
+import de.rafael.plugins.creeper.recover.shell.CreeperShellContext;
 import lombok.Getter;
 import org.bstats.bukkit.Metrics;
 import org.bstats.charts.SingleLineChart;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
-import org.bukkit.command.CommandExecutor;
-import org.bukkit.command.CommandMap;
-import org.bukkit.command.PluginCommand;
-import org.bukkit.command.TabCompleter;
-import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.PluginDescriptionFile;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.jetbrains.annotations.NotNull;
 
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
+ * The CreeperRecover core: everything the plugin does, brought up and taken down on demand.
+ *
+ * <p>This used to be the plugin's {@code JavaPlugin}. It is now the entrypoint of
+ * {@code creeper-recover-core.jar} (declared in
+ * {@code META-INF/services/de.rafael.plugins.creeper.recover.shell.CreeperRecoverCore}), loaded by
+ * the shell into its own classloader and replaceable with {@code /recover swap}. {@link #start} is
+ * the old {@code onLoad} followed by the old {@code onEnable}; {@link #stop} is the old
+ * {@code onDisable}. Listeners, the {@code /recover} executor and every scheduled task go through
+ * the {@link CreeperShellContext} so the shell can detach them when this generation stops.
+ *
+ * <p>The static {@link #instance()} is per generation: each core jar is loaded by its own
+ * classloader, so each generation has its own copy of this class and its statics.
+ *
  * @author Rafael K.
  * @since 06/07/2023
  */
 
 @Getter
-public abstract class CreeperPlugin extends JavaPlugin {
+public class CreeperPlugin implements CreeperRecoverCore {
 
     @Getter
     protected static PluginVersion version;
@@ -76,20 +87,40 @@ public abstract class CreeperPlugin extends JavaPlugin {
 
     protected UpdateChecker updateChecker;
 
+    /** The shell facade for this generation; set at {@link #start}. */
+    private CreeperShellContext context;
+
+    /** Null unless bStats is enabled in config.json; shut down when this generation stops. */
+    private Metrics metrics;
+
+    /** Required by the core loader. Does nothing: there is no context yet. */
+    public CreeperPlugin() {
+    }
+
     public static Scheduler scheduler() {
         return instance.scheduler;
     }
 
     @Override
-    public void onLoad() {
+    public void start(CreeperShellContext context) {
+        this.context = context;
         instance = this;
-        version = new PluginVersion().from(getDescription().getVersion());
+        this.scheduler = new BukkitScheduler(context);
+
+        load();
+        enable();
+    }
+
+    /** The old {@code onLoad}: messages, config and stats. */
+    private void load() {
+        PluginDescriptionFile description = context.plugin().getDescription();
+        version = new PluginVersion().from(description.getVersion());
 
         this.messageManager = new MessageManager();
         this.messageManager.load();
 
         Bukkit.getConsoleSender().sendMessage(messageManager.getMessage(MessageManager.Message.PREFIX) + "§7Loading §b"
-                + getDescription().getName() + " §7version §3" + version.toString());
+                + description.getName() + " §7version §3" + version.toString());
 
         Bukkit.getConsoleSender().sendMessage("§7[CreeperRecover] Initializing ConfigManager...");
         try {
@@ -140,8 +171,8 @@ public abstract class CreeperPlugin extends JavaPlugin {
                 + (configManager == null) + ", Config loaded? " + configLoaded);
     }
 
-    @Override
-    public void onEnable() {
+    /** The old {@code onEnable}, with registrations routed through the context. */
+    private void enable() {
         this.explosionManager = new ExplosionManager();
         this.updateChecker = new UpdateChecker(98836);
 
@@ -149,19 +180,23 @@ public abstract class CreeperPlugin extends JavaPlugin {
         if (this.configManager == null) {
             Bukkit.getConsoleSender()
                     .sendMessage("§c[CreeperRecover] ConfigManager is null! Plugin initialization failed.");
-            this.setEnabled(false);
-            return;
+            // The shell answers a throwing start by running without a core (boot) or by putting the
+            // previous core back (swap); the old JavaPlugin disabled itself here.
+            throw new IllegalStateException("ConfigManager is null; CreeperRecover core initialization failed");
         }
 
         if (this.configManager.bStats()) {
             int pluginId = 14155;
-            Metrics metrics = new Metrics(this, pluginId);
+            this.metrics = new Metrics((JavaPlugin) context.plugin(), pluginId);
             metrics.addCustomChart(new SingleLineChart("blocksRecovered", () -> this.pluginStats.blocksRecovered()));
             metrics.addCustomChart(
                     new SingleLineChart("explosionsRecovered", () -> this.pluginStats.explosionsRecovered()));
+            // bStats runs its own submitter thread that holds this generation's chart lambdas.
+            context.registerCloseout(this.metrics::shutdown);
         }
         if (!this.configManager.ignoreUpdates()) {
             this.updateChecker.isLatestVersion(version, aBoolean -> {
+                String current = context.plugin().getDescription().getVersion();
                 if (!aBoolean) {
                     Bukkit.getConsoleSender().sendMessage(messageManager.getMessage(MessageManager.Message.PREFIX)
                             + "§8--------------------------------------");
@@ -171,7 +206,7 @@ public abstract class CreeperPlugin extends JavaPlugin {
                             + "§7The plugin §bCreeperRecover §7has an §aupdate§8.");
                     Bukkit.getConsoleSender()
                             .sendMessage(messageManager.getMessage(MessageManager.Message.PREFIX)
-                                    + "§7Current Version§8: §3" + getDescription().getVersion()
+                                    + "§7Current Version§8: §3" + current
                                     + " §7Latest Version§8: §a" + this.updateChecker.latestVersion());
                     Bukkit.getConsoleSender()
                             .sendMessage(messageManager.getMessage(MessageManager.Message.PREFIX) + " ");
@@ -188,55 +223,38 @@ public abstract class CreeperPlugin extends JavaPlugin {
             });
         }
 
-        // Commands
-        registerCommand("recover", "Command to control the plugin", RecoverCommand.class);
+        // Commands. The shell owns the /recover name (plugin.yml) and keeps "swap" for itself.
+        context.registerCommand("recover", new RecoverCommand());
 
         // Events
-        Bukkit.getPluginManager().registerEvents(new EntityExplodeListener(), this);
-        Bukkit.getPluginManager().registerEvents(new BlockPhysicsListener(), this);
+        context.registerListener(new EntityExplodeListener());
+        context.registerListener(new BlockPhysicsListener());
+
+        // Tasks (was the spigot module's onEnable)
+        context.runTaskTimerAsynchronously(() -> this.pluginStats.tick(), 0, 20 * 60 * 5);
     }
 
+    /**
+     * The old {@code onDisable}, run on a swap as well as at shutdown. Puts back every block still
+     * waiting for recovery before returning, so the next core (or the next boot) starts with nothing
+     * in flight and no location left suppressed.
+     */
     @Override
-    public void onDisable() {
+    public void stop() {
+        String when = context.isSwapping() ? "the core is §eswapped" : "the server §cstops";
         if (this.explosionManager != null) {
-            int recovered = this.explosionManager.recoverBlocks(Integer.MAX_VALUE);
+            int recovered = this.explosionManager.recoverAllForStop();
             if (this.messageManager != null) {
                 Bukkit.getConsoleSender().sendMessage(messageManager.getMessage(MessageManager.Message.PREFIX)
-                        + "§7The plugin recovered §b" + recovered + " §7blocks before the server §cstops§8.");
+                        + "§7The plugin recovered §b" + recovered + " §7blocks before " + when + "§8.");
             } else {
                 Bukkit.getConsoleSender().sendMessage("§7[CreeperRecover] Plugin recovered §b" + recovered
-                        + " §7blocks before the server §cstops§8.");
+                        + " §7blocks before " + when + "§8.");
             }
         }
 
         if (this.pluginStats != null) {
             this.pluginStats.save();
-        }
-    }
-
-    private void registerCommand(String name, String description,
-            @NotNull Class<? extends CommandExecutor> commandClass) {
-        try {
-            var constructor = PluginCommand.class.getDeclaredConstructor(String.class, Plugin.class);
-            constructor.setAccessible(true);
-            PluginCommand pluginCommand = constructor.newInstance(name, this);
-            constructor.setAccessible(false);
-            var commandMapField = Bukkit.getServer().getClass().getDeclaredField("commandMap");
-            commandMapField.setAccessible(true);
-            CommandMap commandMap = (CommandMap) commandMapField.get(Bukkit.getServer());
-            commandMap.register(name, name, pluginCommand);
-            commandMapField.setAccessible(false);
-
-            CommandExecutor command = commandClass.getDeclaredConstructor().newInstance();
-            pluginCommand.setDescription(description);
-            pluginCommand.setExecutor(command);
-            if (TabCompleter.class.isAssignableFrom(commandClass)) {
-                pluginCommand.setTabCompleter((TabCompleter) command);
-            }
-        } catch (Throwable throwable) {
-            Bukkit.getConsoleSender().sendMessage(
-                    messageManager.getMessage(MessageManager.Message.PREFIX) + "§cFailed to register command§8!");
-            throwable.printStackTrace();
         }
     }
 
@@ -247,6 +265,16 @@ public abstract class CreeperPlugin extends JavaPlugin {
         void runAsync(Runnable runnable);
 
         void runAsyncAtFixedRate(Consumer<Runnable> runnable, int delay, int period, TimeUnit unit);
+
+        /**
+         * Runs, on the calling (main) thread, every main-thread hop that was queued from another
+         * thread and has not run yet. Used by a stopping core: those hops carry block restores
+         * whose blocks are already off their explosion's list, and the scheduler is about to cancel
+         * them.
+         *
+         * @return how many hops ran
+         */
+        int runPendingNow();
 
     }
 

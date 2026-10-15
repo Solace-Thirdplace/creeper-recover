@@ -30,4 +30,8 @@
 
 rootProject.name = "creeper-recover"
 
-include("common", "spigot", "folia")
+// common = the hot-swappable core (creeper-recover-core.jar), spigot = the shell plugin jar.
+// The Folia module was dropped when the plugin moved to the shell/core layout: its main class
+// extended the old JavaPlugin core, and a Folia shell (region schedulers) was not worth building
+// for a network that runs Paper/Purpur only. It is in git history before this change.
+include("common", "spigot")

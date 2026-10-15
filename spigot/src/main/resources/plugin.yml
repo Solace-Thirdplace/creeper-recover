@@ -4,3 +4,6 @@ main: "de.rafael.plugins.creeper.recover.CreeperRecover"
 api-version: "1.21"
 description: "Recovers all destroyed blocks by Creeper or other Entities"
 author: "HttpRafa"
+commands:
+  recover:
+    description: "Command to control the plugin"

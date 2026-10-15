@@ -53,12 +53,21 @@ public class ExplosionManager {
 
     private final List<Location> suppressedLocations = new ArrayList<>();
     private final List<Explosion> explosionList = new ArrayList<>();
+    /**
+     * Set once this core generation starts stopping (a swap or a shutdown). Recovery timers that
+     * still fire after that do nothing: {@link #recoverAllForStop()} has put everything back.
+     */
+    private volatile boolean stopping;
 
     public void handle(Explosion explosion) {
         this.explosionList.add(explosion);
         explosion.blocks().forEach(explodedBlock -> this.suppressBlock(explodedBlock.location()));
         List<Explosion> explosions = Collections.singletonList(explosion);
         CreeperPlugin.scheduler().runAsyncAtFixedRate(cancel -> {
+            if (this.stopping) {
+                cancel.run();
+                return;
+            }
             // A dragon still perched on the blocks: wait for it to move off (checked each period).
             explosion.refreshHold();
             if (explosion.heldBySource()) {
@@ -69,6 +78,41 @@ public class ExplosionManager {
                 cancel.run();
         }, CreeperPlugin.instance().configManager().recoverDelay(),
                 CreeperPlugin.instance().configManager().recoverSpeed(), TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Puts back every block still waiting for recovery, now, on the calling thread, and stops the
+     * timed recovery. Called from the core's stop on the main thread, for a swap or a shutdown, so
+     * that nothing is in flight when the next core (or the next boot) takes over.
+     *
+     * <p>Order matters. {@link #stopping} goes up first so no timer starts another tick. Taking this
+     * manager's monitor then waits out a timer tick that is already running. Hops such a tick queued
+     * for the main thread carry blocks it has already taken off their explosion, so those run before
+     * the remaining blocks are recovered, and once more afterwards in case one was queued at the
+     * last moment. A held explosion (a dragon still perched) is recovered as well, as at shutdown.
+     *
+     * <p>Every recovered block frees its suppressed location, so the list is empty afterwards. If it
+     * is not, the leftover locations are logged and dropped: the next core keeps its own list, and
+     * this generation's physics listener is about to be unregistered.
+     *
+     * @return the number of blocks recovered here, including queued restores that were run
+     */
+    public int recoverAllForStop() {
+        this.stopping = true;
+        CreeperPlugin.Scheduler scheduler = CreeperPlugin.scheduler();
+        int recovered;
+        synchronized (this) {
+            recovered = scheduler.runPendingNow();
+            recovered += recoverBlocks(Integer.MAX_VALUE);
+        }
+        recovered += scheduler.runPendingNow();
+        if (!this.suppressedLocations.isEmpty()) {
+            CreeperPlugin.instance().context().logger().warning(String.format(
+                    "%d suppressed locations left after recovering everything; dropping them: %s",
+                    this.suppressedLocations.size(), this.suppressedLocations));
+            this.suppressedLocations.clear();
+        }
+        return recovered;
     }
 
     public int recoverBlocks(int amount) {

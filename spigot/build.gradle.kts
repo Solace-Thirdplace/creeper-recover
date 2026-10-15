@@ -28,10 +28,24 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+import java.util.zip.ZipFile
+
+/*
+ * The shell: plugin.yml, the CreeperRecover main class, the /recover relay and the swap protocol
+ * (packages hotswap and shell). Built as creeper-recover-<version>-spigot.jar, the file name the
+ * plugin has always had, so plugins/update/ can replace the installed jar. Changing anything here
+ * needs a server restart; everything else is in :common (the core) and swaps with /recover swap.
+ *
+ * Nothing from :common may end up in this jar. The core is loaded parent-first under this jar's
+ * classloader, so a core class duplicated here would always resolve from the shell and a swap would
+ * silently keep running the old copy. verifyJarSplit checks that on the built jars.
+ */
+
 plugins {
     id("java")
-    id("com.gradleup.shadow") version "9.0.0-beta4"
 }
+
+evaluationDependsOn(":common")
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
@@ -45,14 +59,8 @@ repositories {
 }
 
 dependencies {
-    implementation(project(":common"))
-    implementation("org.bstats:bstats-bukkit:" + findProperty("bstats_version"))
-    implementation("org.jetbrains:annotations:" + findProperty("jetbrains_annotations_version"))
-
+    // Bukkit API and the JDK only: no bStats, no Lombok, no annotations, and no :common.
     compileOnly("org.spigotmc:spigot-api:" + findProperty("spigot_version"))
-
-    compileOnly("org.projectlombok:lombok:" + findProperty("lombok_version"))
-    annotationProcessor("org.projectlombok:lombok:" + findProperty("lombok_version"))
 }
 
 tasks.jar {
@@ -60,15 +68,82 @@ tasks.jar {
     archiveClassifier.set(project.name)
 }
 
-tasks.shadowJar {
-    archiveBaseName.set(findProperty("archives_base_name").toString())
-    archiveClassifier.set(project.name)
+val coreJar = project(":common").tasks.named<Jar>("shadowJar")
 
-    relocate("org.bstats", "de.rafael.plugins.creeper.recover.utils")
+/**
+ * Asserts the split the pattern rests on, against the built jars. Each failure is silent at
+ * runtime: a class in both jars makes a swap a no-op, a shell class in the core gives a generation
+ * its own incompatible copy of the contract, and a missing service file makes the loader refuse
+ * the core at boot.
+ */
+val verifyJarSplit by tasks.registering {
+    group = "verification"
+    description = "Asserts the shell jar and the core jar carry exactly the classes they should."
+    dependsOn(tasks.jar, coreJar)
+
+    val shellFile = tasks.jar.flatMap { it.archiveFile }
+    val coreFile = coreJar.flatMap { it.archiveFile }
+    inputs.file(shellFile)
+    inputs.file(coreFile)
+
+    doLast {
+        fun classesIn(file: File): Set<String> = ZipFile(file).use { zip ->
+            zip.entries().asSequence()
+                .filter { !it.isDirectory && it.name.endsWith(".class") }
+                .map { it.name }
+                .toSet()
+        }
+
+        val base = "de/rafael/plugins/creeper/recover/"
+        val mainClass = base + "CreeperRecover"
+        val shell = classesIn(shellFile.get().asFile)
+        val core = classesIn(coreFile.get().asFile)
+
+        val both = shell.intersect(core)
+        if (both.isNotEmpty()) {
+            throw GradleException("${both.size} class(es) are in both jars: ${both.take(10)}. They resolve "
+                    + "parent-first from the shell, so a swap would keep running the shell's copy")
+        }
+
+        val strayInShell = shell.filterNot { name ->
+            name == "$mainClass.class" || name.startsWith("$mainClass$")
+                    || name.startsWith(base + "hotswap/") || name.startsWith(base + "shell/")
+        }
+        if (strayInShell.isNotEmpty()) {
+            throw GradleException("shell jar contains ${strayInShell.size} class(es) outside the shell: "
+                    + "${strayInShell.take(10)}. Plugin logic belongs in :common")
+        }
+
+        val strayInCore = core.filterNot { name ->
+            name.startsWith(base + "common/") || name.startsWith(base + "utils/")
+        }
+        if (strayInCore.isNotEmpty()) {
+            throw GradleException("core jar contains ${strayInCore.size} class(es) it must get from the shell "
+                    + "or not carry at all: ${strayInCore.take(10)}")
+        }
+
+        ZipFile(coreFile.get().asFile).use { zip ->
+            if (zip.getEntry("META-INF/services/de.rafael.plugins.creeper.recover.shell.CreeperRecoverCore") == null) {
+                throw GradleException("core jar has no META-INF/services entry for CreeperRecoverCore; the "
+                        + "loader would refuse it")
+            }
+        }
+        ZipFile(shellFile.get().asFile).use { zip ->
+            if (zip.getEntry("plugin.yml") == null) {
+                throw GradleException("shell jar has no plugin.yml")
+            }
+        }
+
+        logger.lifecycle("jar split verified: shell ${shell.size} classes, core ${core.size} classes")
+    }
 }
 
 tasks.assemble {
-    dependsOn(tasks.shadowJar)
+    dependsOn(coreJar)
+}
+
+tasks.build {
+    dependsOn(verifyJarSplit)
 }
 
 tasks {

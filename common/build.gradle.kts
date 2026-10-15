@@ -28,6 +28,17 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+/*
+ * The core: everything CreeperRecover does, built as creeper-recover-core.jar.
+ *
+ * Deployed to plugins/CreeperRecover/core/creeper-recover-core.jar (boot) or
+ * creeper-recover-core.jar.staged (picked up by /recover swap or the next restart). The shell loads
+ * it into a throwaway classloader whose parent is the shell's own, with parent-first delegation, so
+ * any class present in both jars would always resolve from the shell and could never be replaced by
+ * a swap. That is why the shell contract below is compileOnly, and why :spigot:verifyJarSplit
+ * checks the built jars.
+ */
+
 plugins {
     id("java")
     id("com.gradleup.shadow") version "9.0.0-beta4"
@@ -45,17 +56,29 @@ repositories {
 }
 
 dependencies {
+    // bStats is shaded into the core only (relocated below); each generation gets its own copy and
+    // shuts its submitter down when it stops.
     implementation("org.bstats:bstats-bukkit:" + findProperty("bstats_version"))
-    implementation("org.jetbrains:annotations:" + findProperty("jetbrains_annotations_version"))
+    // Annotations are compile-time only; shading them would put the same classes in both jars.
+    compileOnly("org.jetbrains:annotations:" + findProperty("jetbrains_annotations_version"))
 
     compileOnly("org.spigotmc:spigot-api:" + findProperty("spigot_version"))
+
+    // The shell contract (CreeperRecoverCore, CreeperShellContext). compileOnly on purpose: at
+    // runtime these come from the parent loader, and a copy in this jar would be a second,
+    // incompatible set of the types handed across the swap boundary.
+    compileOnly(project(":spigot"))
 
     compileOnly("org.projectlombok:lombok:" + findProperty("lombok_version"))
     annotationProcessor("org.projectlombok:lombok:" + findProperty("lombok_version"))
 }
 
 tasks.shadowJar {
+    archiveFileName.set("creeper-recover-core.jar")
     relocate("org.bstats", "de.rafael.plugins.creeper.recover.utils")
+    // Fixed timestamps and order, so an unchanged build has an unchanged digest in the swap report.
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
 }
 
 tasks.assemble {
