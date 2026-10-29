@@ -45,6 +45,7 @@ import de.rafael.plugins.creeper.recover.common.classes.enums.TargetTypes;
 import de.rafael.plugins.creeper.recover.common.utils.config.JsonConfiguration;
 import lombok.Getter;
 import org.bukkit.Bukkit;
+import org.bukkit.entity.Player;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Sound;
@@ -497,10 +498,15 @@ public class ConfigManager {
         // Send to console
         Bukkit.getConsoleSender().sendMessage(formattedMessage);
 
-        // Send to all online operators
-        Bukkit.getOnlinePlayers().stream()
-                .filter(player -> player.isOp() || player.hasPermission("creeperrecover.debug"))
-                .forEach(player -> player.sendMessage(formattedMessage));
+        // Send to all online operators, each on the thread that owns that player (the caller may be
+        // a recovery timer or, on Folia, another region's thread)
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            CreeperPlugin.scheduler().runFor(player, () -> {
+                if (player.isOp() || player.hasPermission("creeperrecover.debug")) {
+                    player.sendMessage(formattedMessage);
+                }
+            }, null);
+        }
     }
 
     /**

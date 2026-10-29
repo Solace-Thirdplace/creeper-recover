@@ -43,6 +43,7 @@ import de.rafael.plugins.creeper.recover.common.utils.config.JsonConfiguration;
 import lombok.Getter;
 
 import java.io.File;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Getter
 public class PluginStats {
@@ -53,8 +54,17 @@ public class PluginStats {
     // Daily
     private long lastReset = System.currentTimeMillis();
 
-    private int blocksRecovered = 0;
-    private int explosionsRecovered = 0;
+    // Atomic: on Folia every region thread counts its own restores.
+    private final AtomicInteger blocksRecovered = new AtomicInteger();
+    private final AtomicInteger explosionsRecovered = new AtomicInteger();
+
+    public int blocksRecovered() {
+        return this.blocksRecovered.get();
+    }
+
+    public int explosionsRecovered() {
+        return this.explosionsRecovered.get();
+    }
 
     public void load() {
         JsonConfiguration jsonConfiguration = JsonConfiguration.loadConfig(new File("plugins//CreeperRecover/"), "stats.json");
@@ -72,15 +82,15 @@ public class PluginStats {
         }
 
         if (jsonConfiguration.jsonObject().getAsJsonObject("daily").has("explosionsRecovered")) {
-            this.explosionsRecovered = jsonConfiguration.jsonObject().getAsJsonObject("daily").get("explosionsRecovered").getAsInt();
+            this.explosionsRecovered.set(jsonConfiguration.jsonObject().getAsJsonObject("daily").get("explosionsRecovered").getAsInt());
         } else {
-            jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("explosionsRecovered", this.explosionsRecovered);
+            jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("explosionsRecovered", this.explosionsRecovered.get());
         }
 
         if (jsonConfiguration.jsonObject().getAsJsonObject("daily").has("blocksRecovered")) {
-            this.blocksRecovered = jsonConfiguration.jsonObject().getAsJsonObject("daily").get("blocksRecovered").getAsInt();
+            this.blocksRecovered.set(jsonConfiguration.jsonObject().getAsJsonObject("daily").get("blocksRecovered").getAsInt());
         } else {
-            jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("blocksRecovered", this.blocksRecovered);
+            jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("blocksRecovered", this.blocksRecovered.get());
         }
 
         jsonConfiguration.saveConfig();
@@ -89,8 +99,8 @@ public class PluginStats {
     public void save() {
         JsonConfiguration jsonConfiguration = JsonConfiguration.loadConfig(new File("plugins//CreeperRecover/"), "stats.json");
 
-        jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("explosionsRecovered", this.explosionsRecovered);
-        jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("blocksRecovered", this.blocksRecovered);
+        jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("explosionsRecovered", this.explosionsRecovered.get());
+        jsonConfiguration.jsonObject().getAsJsonObject("daily").addProperty("blocksRecovered", this.blocksRecovered.get());
 
         jsonConfiguration.saveConfig();
     }
@@ -104,18 +114,18 @@ public class PluginStats {
             jsonObject.addProperty("lastReset", System.currentTimeMillis());
             jsonConfiguration.jsonObject().add("daily", jsonObject);
 
-            this.explosionsRecovered = 0;
-            this.blocksRecovered = 0;
+            this.explosionsRecovered.set(0);
+            this.blocksRecovered.set(0);
         }
         save();
     }
 
     public void blockRecovered() {
-        this.blocksRecovered++;
+        this.blocksRecovered.incrementAndGet();
     }
 
     public void explosionRecovered() {
-        this.explosionsRecovered++;
+        this.explosionsRecovered.incrementAndGet();
     }
 
 }

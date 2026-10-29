@@ -75,7 +75,7 @@ public class Explosion {
      * Whether {@link #source} still sits on these blocks. A perched dragon knocks out the blocks
      * under it every tick, so putting them back while it sits there only has it knock them out
      * again, over and over (Wild, 2026-10-15). Starts true for a dragon so nothing is recovered
-     * before the first check; set on the main thread, read by the async recovery timer.
+     * before the first check; set on the dragon's thread, read by the async recovery timer.
      */
     private volatile boolean held;
 
@@ -162,14 +162,24 @@ public class Explosion {
         return this.held;
     }
 
-    /** Looks again, on the main thread, whether the source dragon is still on the blocks. */
+    /**
+     * Looks again whether the source dragon is still on the blocks. The lookup runs on the
+     * explosion's region and the dragon is read on its own thread, which on Folia can be another
+     * region's if it has flown off; on Paper both are the main thread, as before.
+     */
     public void refreshHold() {
         if (this.source == null) {
             return;
         }
-        CreeperPlugin.scheduler().runOnCorrectThread(this.location, () -> {
+        CreeperPlugin.scheduler().runAt(this.location, () -> {
             Entity entity = Bukkit.getEntity(this.source);
-            this.held = entity != null && entity.isValid() && !entity.isDead() && touches(entity.getBoundingBox());
+            if (entity == null) {
+                this.held = false;
+                return;
+            }
+            CreeperPlugin.scheduler().runFor(entity,
+                    () -> this.held = entity.isValid() && !entity.isDead() && touches(entity.getBoundingBox()),
+                    () -> this.held = false);
         });
     }
 
