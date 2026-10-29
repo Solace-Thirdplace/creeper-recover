@@ -52,7 +52,7 @@ java {
 repositories {
     mavenCentral()
 
-    maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
+    maven("https://repo.papermc.io/repository/maven-public/")
 }
 
 dependencies {
@@ -62,7 +62,7 @@ dependencies {
     // Annotations are compile-time only; shading them would put the same classes in both jars.
     compileOnly("org.jetbrains:annotations:" + findProperty("jetbrains_annotations_version"))
 
-    compileOnly("org.spigotmc:spigot-api:" + findProperty("spigot_version"))
+    compileOnly("io.papermc.paper:paper-api:" + findProperty("paper_version"))
 
     // The shell contract (CreeperRecoverCore, CreeperShellContext). compileOnly on purpose: at
     // runtime these come from the parent loader, and a copy in this jar would be a second,

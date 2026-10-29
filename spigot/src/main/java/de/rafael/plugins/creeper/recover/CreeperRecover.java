@@ -54,9 +54,12 @@ import java.util.logging.Level;
  *
  * <h2>In-flight explosions</h2>
  *
- * <p>The outgoing core puts back every block still waiting for recovery during its stop, on the
- * main thread, exactly as a server shutdown always has. The incoming core starts with nothing in
- * flight, so nothing is handed across and nothing can be lost in the gap.
+ * <p>The outgoing core puts back every block still waiting for recovery during its stop, exactly
+ * as a server shutdown always has. On Paper and Purpur that all happens on the main thread before
+ * the stop returns. At a Folia shutdown it also all happens in the stop, because the shutdown
+ * thread owns every region. During a swap on Folia the command's thread owns at most one region,
+ * so blocks elsewhere are handed to their own region's thread and go back one tick later (see
+ * {@code CreeperShellContext#runAtUntracked}). The incoming core starts with nothing in flight.
  */
 public final class CreeperRecover extends JavaPlugin implements CommandExecutor, TabCompleter {
 

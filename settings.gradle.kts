@@ -31,7 +31,7 @@
 rootProject.name = "creeper-recover"
 
 // common = the hot-swappable core (creeper-recover-core.jar), spigot = the shell plugin jar.
-// The Folia module was dropped when the plugin moved to the shell/core layout: its main class
-// extended the old JavaPlugin core, and a Folia shell (region schedulers) was not worth building
-// for a network that runs Paper/Purpur only. It is in git history before this change.
+// The separate Folia module was dropped when the plugin moved to the shell/core layout. The same
+// two jars now run on Folia/Canvas as well as Paper/Purpur: the shell schedules through Paper's
+// region, entity and async schedulers, which exist on both, and plugin.yml says folia-supported.
 include("common", "spigot")

@@ -40,6 +40,7 @@ package de.rafael.plugins.creeper.recover.common.manager;
 
 import de.rafael.plugins.creeper.recover.common.CreeperPlugin;
 import de.rafael.plugins.creeper.recover.common.classes.Explosion;
+import de.rafael.plugins.creeper.recover.common.scheduler.CorePreloader;
 import org.bukkit.Location;
 import org.jetbrains.annotations.NotNull;
 
@@ -47,11 +48,20 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 public class ExplosionManager {
 
-    private final List<Location> suppressedLocations = new ArrayList<>();
+    /**
+     * Crater locations whose physics is cancelled until their block is back, with how many pending
+     * blocks hold each one (the list this replaced allowed the same location twice). Concurrent
+     * because on Folia every region thread reads it from the physics listener and frees its own
+     * blocks as it restores them.
+     */
+    private final Map<Location, Integer> suppressedLocations = new ConcurrentHashMap<>();
+    /** Explosions still being recovered. Guarded by this manager's monitor. */
     private final List<Explosion> explosionList = new ArrayList<>();
     /**
      * Set once this core generation starts stopping (a swap or a shutdown). Recovery timers that
@@ -60,7 +70,11 @@ public class ExplosionManager {
     private volatile boolean stopping;
 
     public void handle(Explosion explosion) {
-        this.explosionList.add(explosion);
+        // Explosions arrive on the thread of the region they happen in (on Paper, the main thread)
+        // while recovery timers walk this list off-thread.
+        synchronized (this) {
+            this.explosionList.add(explosion);
+        }
         explosion.blocks().forEach(explodedBlock -> this.suppressBlock(explodedBlock.location()));
         List<Explosion> explosions = Collections.singletonList(explosion);
         CreeperPlugin.scheduler().runAsyncAtFixedRate(cancel -> {
@@ -81,9 +95,11 @@ public class ExplosionManager {
     }
 
     /**
-     * Puts back every block still waiting for recovery, now, on the calling thread, and stops the
-     * timed recovery. Called from the core's stop on the main thread, for a swap or a shutdown, so
-     * that nothing is in flight when the next core (or the next boot) takes over.
+     * Puts back every block still waiting for recovery and stops the timed recovery. Called from
+     * the core's stop, for a swap or a shutdown, so that nothing is in flight when the next core (or
+     * the next boot) takes over. Blocks the calling thread owns go back now, on this thread: on
+     * Paper (the main thread) and at a Folia shutdown (the shutdown thread) that is all of them.
+     * During a Folia swap the rest are handed to their own regions and go back on the next tick.
      *
      * <p>Order matters. {@link #stopping} goes up first so no timer starts another tick. Taking this
      * manager's monitor then waits out a timer tick that is already running. Hops such a tick queued
@@ -106,10 +122,21 @@ public class ExplosionManager {
             recovered += recoverBlocks(Integer.MAX_VALUE);
         }
         recovered += scheduler.runPendingNow();
-        if (!this.suppressedLocations.isEmpty()) {
+        int handedOff = scheduler.pendingElsewhere();
+        if (handedOff > 0) {
+            // They run on this generation's classes after the shell has closed its class loader,
+            // which can still use classes it has loaded but cannot load new ones.
+            CorePreloader.preload(CreeperPlugin.instance().context().logger());
+            CreeperPlugin.instance().context().logger().info(String.format(
+                    "%d blocks are in regions this thread does not own; they go back on their region's next tick",
+                    handedOff));
+            // Their locations stay suppressed only until this generation's physics listener is
+            // unregistered, a moment from now; the restores place blocks without physics anyway.
+        }
+        if (handedOff == 0 && !this.suppressedLocations.isEmpty()) {
             CreeperPlugin.instance().context().logger().warning(String.format(
                     "%d suppressed locations left after recovering everything; dropping them: %s",
-                    this.suppressedLocations.size(), this.suppressedLocations));
+                    this.suppressedLocations.size(), this.suppressedLocations.keySet()));
             this.suppressedLocations.clear();
         }
         return recovered;
@@ -149,19 +176,19 @@ public class ExplosionManager {
     }
 
     public boolean hasSuppressedBlocks() {
-        return this.suppressedLocations.size() > 0;
+        return !this.suppressedLocations.isEmpty();
     }
 
     public void suppressBlock(Location location) {
-        this.suppressedLocations.add(location);
+        this.suppressedLocations.merge(location, 1, Integer::sum);
     }
 
     public void freeBlock(Location location) {
-        this.suppressedLocations.remove(location);
+        this.suppressedLocations.computeIfPresent(location, (at, holds) -> holds > 1 ? holds - 1 : null);
     }
 
     public boolean isBlockSuppressed(Location location) {
-        return this.suppressedLocations.contains(location);
+        return this.suppressedLocations.containsKey(location);
     }
 
 }

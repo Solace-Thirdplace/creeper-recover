@@ -43,8 +43,10 @@ public interface CreeperRecoverCore {
 
     /**
      * Takes the core down. Must leave nothing in flight: every block still waiting to be recovered
-     * is put back here, on the main thread, before this returns, because the next core (or the
-     * next server start) knows nothing about this core's explosions.
+     * is put back here before this returns, because the next core (or the next server start) knows
+     * nothing about this core's explosions. A block whose region the calling thread does not own
+     * (a swap on Folia) is handed to that region with {@code runAtUntracked}, which outlives the
+     * teardown, and goes back on the next tick.
      *
      * <p>Exceptions are logged and the swap continues: a core that is going away must never be able
      * to block its own replacement.
