@@ -51,6 +51,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Supplier;
 
 public class ExplosionManager {
 
@@ -68,30 +71,68 @@ public class ExplosionManager {
      * still fire after that do nothing: {@link #recoverAllForStop()} has put everything back.
      */
     private volatile boolean stopping;
+    /**
+     * Read-held by {@link #handle} while it decides on and records an explosion, write-held by
+     * {@link #recoverAllForStop()} once {@link #stopping} is up. Explosions in different regions take
+     * the read side together; the drain waits for the ones already being recorded and every later
+     * one sees {@link #stopping} and is refused.
+     */
+    private final ReadWriteLock intake = new ReentrantReadWriteLock();
 
-    public void handle(Explosion explosion) {
-        // Explosions arrive on the thread of the region they happen in (on Paper, the main thread)
-        // while recovery timers walk this list off-thread.
-        synchronized (this) {
-            this.explosionList.add(explosion);
-        }
-        explosion.blocks().forEach(explodedBlock -> this.suppressBlock(explodedBlock.location()));
-        List<Explosion> explosions = Collections.singletonList(explosion);
-        CreeperPlugin.scheduler().runAsyncAtFixedRate(cancel -> {
+    /**
+     * Takes on a new explosion unless this core is stopping. The explosion is built here, by
+     * {@code create}, only once it is certain to be taken: building one saves and then empties the
+     * blocks' containers, so it must not happen for an explosion nobody will put back.
+     *
+     * <p>On Folia explosions arrive on the thread of the region they happen in, so one can arrive
+     * while another thread drains this manager for a swap. The intake lock settles which comes
+     * first. An explosion taken before {@link #recoverAllForStop()} starts draining is drained with
+     * the rest; one that arrives later is refused and the caller leaves the event to vanilla, as if
+     * no core were loaded. On Paper both run on the main thread and never overlap.
+     *
+     * @param create builds the explosion; called on the caller's thread, at most once
+     * @return {@code false} if this core is stopping, in which case {@code create} was not called
+     */
+    public boolean handle(@NotNull Supplier<Explosion> create) {
+        this.intake.readLock().lock();
+        try {
             if (this.stopping) {
-                cancel.run();
-                return;
+                return false;
             }
-            // A dragon still perched on the blocks: wait for it to move off (checked each period).
-            explosion.refreshHold();
-            if (explosion.heldBySource()) {
-                return;
+            Explosion explosion = create.get();
+            // Nobody else can see the explosion until it is in the list, so its blocks can be
+            // walked here without its monitor.
+            explosion.blocks().forEach(explodedBlock -> this.suppressBlock(explodedBlock.location()));
+            synchronized (this) {
+                this.explosionList.add(explosion);
             }
-            recoverBlocks(explosions, false, 1);
-            if (explosion.isFinished())
-                cancel.run();
-        }, CreeperPlugin.instance().configManager().recoverDelay(),
-                CreeperPlugin.instance().configManager().recoverSpeed(), TimeUnit.MILLISECONDS);
+            List<Explosion> explosions = Collections.singletonList(explosion);
+            // Scheduled before the intake lock is released, so the timer always exists before this
+            // generation's stop begins and is cancelled with the rest of its tasks.
+            CreeperPlugin.scheduler().runAsyncAtFixedRate(cancel -> {
+                if (this.stopping) {
+                    cancel.run();
+                    return;
+                }
+                // A dragon still perched on the blocks: wait for it to move off (checked each period).
+                explosion.refreshHold();
+                if (explosion.heldBySource()) {
+                    return;
+                }
+                recoverBlocks(explosions, false, 1);
+                if (explosion.isFinished())
+                    cancel.run();
+            }, CreeperPlugin.instance().configManager().recoverDelay(),
+                    CreeperPlugin.instance().configManager().recoverSpeed(), TimeUnit.MILLISECONDS);
+            return true;
+        } finally {
+            this.intake.readLock().unlock();
+        }
+    }
+
+    /** Whether this core generation has started stopping; see {@link #stopping}. */
+    public boolean isStopping() {
+        return this.stopping;
     }
 
     /**
@@ -101,7 +142,9 @@ public class ExplosionManager {
      * Paper (the main thread) and at a Folia shutdown (the shutdown thread) that is all of them.
      * During a Folia swap the rest are handed to their own regions and go back on the next tick.
      *
-     * <p>Order matters. {@link #stopping} goes up first so no timer starts another tick. Taking this
+     * <p>Order matters. {@link #stopping} goes up first so no timer starts another tick and no new
+     * explosion is taken. Taking the intake lock's write side then waits out an explosion another
+     * region is recording at this moment, so it is in the list before the drain reads it. Taking this
      * manager's monitor then waits out a timer tick that is already running. Hops such a tick queued
      * for the main thread carry blocks it has already taken off their explosion, so those run before
      * the remaining blocks are recovered, and once more afterwards in case one was queued at the
@@ -115,6 +158,9 @@ public class ExplosionManager {
      */
     public int recoverAllForStop() {
         this.stopping = true;
+        // Wait out explosions other regions are recording right now; any later one is refused.
+        this.intake.writeLock().lock();
+        this.intake.writeLock().unlock();
         CreeperPlugin.Scheduler scheduler = CreeperPlugin.scheduler();
         int recovered;
         synchronized (this) {

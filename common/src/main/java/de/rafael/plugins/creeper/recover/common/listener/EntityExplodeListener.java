@@ -91,6 +91,12 @@ public class EntityExplodeListener implements Listener {
             return;
         }
 
+        // A core that is stopping for a swap leaves the explosion to vanilla, as when no core is
+        // loaded: it must not empty containers or clear blocks it will never put back.
+        if (CreeperPlugin.instance().explosionManager().isStopping()) {
+            return;
+        }
+
         if (CreeperPlugin.instance().configManager().usePlugin(event)) {
             var blocks = new BlockList(event.blockList());
 
@@ -100,8 +106,6 @@ public class EntityExplodeListener implements Listener {
                     event.getLocation().toString(),
                     blocks.blocks().size()));
 
-            // Disable damage by explosion
-            event.setYield(100);
             int originalBlockCount = blocks.blocks().size();
 
             // Remove blacklisted blocks from recovery (they get destroyed but won't be
@@ -118,9 +122,15 @@ public class EntityExplodeListener implements Listener {
                         filteredBlockCount));
             }
 
-            // Store blocks
-            CreeperPlugin.instance().explosionManager().handle(
-                    new Explosion(event.getLocation().clone(), blocks, event.getEntity()));
+            // Store blocks. The explosion is only built (saving and emptying containers) if the
+            // core takes it; on Folia it can start stopping between the check above and here.
+            if (!CreeperPlugin.instance().explosionManager().handle(
+                    () -> new Explosion(event.getLocation().clone(), blocks, event.getEntity()))) {
+                return;
+            }
+
+            // Disable damage by explosion
+            event.setYield(100);
 
             CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
                     "Started recovery process for %d blocks",
