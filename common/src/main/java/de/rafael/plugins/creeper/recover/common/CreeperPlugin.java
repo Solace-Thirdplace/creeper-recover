@@ -33,6 +33,7 @@ package de.rafael.plugins.creeper.recover.common;
 import de.rafael.plugins.creeper.recover.common.command.RecoverCommand;
 import de.rafael.plugins.creeper.recover.common.listener.BlockPhysicsListener;
 import de.rafael.plugins.creeper.recover.common.listener.EntityExplodeListener;
+import de.rafael.plugins.creeper.recover.common.listener.ExplosionEntityListener;
 import de.rafael.plugins.creeper.recover.common.manager.ConfigManager;
 import de.rafael.plugins.creeper.recover.common.manager.ExplosionManager;
 import de.rafael.plugins.creeper.recover.common.manager.MessageManager;
@@ -230,6 +231,7 @@ public class CreeperPlugin implements CreeperRecoverCore {
         // Events
         context.registerListener(new EntityExplodeListener());
         context.registerListener(new BlockPhysicsListener());
+        context.registerListener(new ExplosionEntityListener());
 
         // Tasks (was the spigot module's onEnable)
         context.runAsyncAtFixedRate(task -> this.pluginStats.tick(), 0, 5, TimeUnit.MINUTES);

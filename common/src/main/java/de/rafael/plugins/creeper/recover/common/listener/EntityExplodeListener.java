@@ -46,6 +46,7 @@ import org.bukkit.block.Block;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.inventory.InventoryHolder;
 
 public class EntityExplodeListener implements Listener {
 
@@ -98,6 +99,22 @@ public class EntityExplodeListener implements Listener {
         }
 
         if (CreeperPlugin.instance().configManager().usePlugin(event)) {
+            // Blocks that hold items stay standing: putting a container back never brought its
+            // contents back reliably, so it isn't blown up at all. ExplosionEntityListener does
+            // the same for item frames and armour stands.
+            int storageKept = 0;
+            var storage = event.blockList().iterator();
+            while (storage.hasNext()) {
+                if (storage.next().getState(false) instanceof InventoryHolder) {
+                    storage.remove();
+                    storageKept++;
+                }
+            }
+            if (storageKept > 0) {
+                CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
+                        "Kept %d storage blocks out of the explosion", storageKept));
+            }
+
             var blocks = new BlockList(event.blockList());
 
             CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
