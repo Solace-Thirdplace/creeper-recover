@@ -1,11 +1,15 @@
 package de.rafael.plugins.creeper.recover.shell;
 
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import org.bukkit.Location;
 import org.bukkit.command.CommandExecutor;
+import org.bukkit.entity.Entity;
 import org.bukkit.event.Listener;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.logging.Logger;
 
 /**
@@ -107,21 +111,70 @@ public interface CreeperShellContext {
      */
     Object take(String key);
 
-    /** Runs {@code task} on the main thread next tick. Never returns {@code null}. */
-    BukkitTask runTask(Runnable task);
+    /*
+     * Scheduling. Paper's region, entity and async schedulers, which exist on Paper and Purpur as
+     * well as on Folia and Canvas, so one code path serves both. On Paper the region and entity
+     * schedulers run on the main thread; on Folia they run on the thread that owns the location or
+     * the entity. Bukkit's BukkitScheduler is not offered: Folia refuses it outright.
+     *
+     * Every tracked method hands back a task that is never null; after teardown it is an already
+     * cancelled RetiredTask. Tracked tasks are cancelled when this generation stops.
+     */
 
-    /** Runs {@code task} off the main thread. Never returns {@code null}. */
-    BukkitTask runTaskAsynchronously(Runnable task);
+    /**
+     * Runs {@code task} on the thread that owns {@code location}, next tick. Cancelled if this
+     * generation stops first.
+     *
+     * @param location where the work happens; its world and chunk pick the owning region
+     * @param task     the work
+     * @return the task, never {@code null}
+     */
+    ScheduledTask runAt(Location location, Consumer<ScheduledTask> task);
 
-    /** Runs {@code task} on the main thread after {@code delayTicks}. Never returns {@code null}. */
-    BukkitTask runTaskLater(Runnable task, long delayTicks);
+    /**
+     * Runs {@code task} on the thread that owns {@code location}, next tick, and does NOT cancel it
+     * when this generation stops. For work that must not be lost to a swap: a block restore whose
+     * block is already off its explosion's list. It keeps the retired generation's classes alive
+     * until it has run, which is one tick.
+     *
+     * <p>Unlike the tracked methods this still schedules after teardown, as long as the shell
+     * plugin is enabled.
+     *
+     * @param location where the work happens
+     * @param task     the work
+     * @return {@code false} if the server refused the task (the plugin is disabling)
+     */
+    boolean runAtUntracked(Location location, Runnable task);
 
-    /** Runs {@code task} off the main thread after {@code delayTicks}. Never returns {@code null}. */
-    BukkitTask runTaskLaterAsynchronously(Runnable task, long delayTicks);
+    /**
+     * Runs {@code task} on the thread that owns {@code entity}, next tick, following the entity
+     * across regions. If the entity is removed first, {@code retired} runs instead (on whatever
+     * thread notices). If the entity is already gone, {@code retired} runs now, on the calling
+     * thread, and an already-cancelled task comes back.
+     *
+     * @param entity  the entity the work reads or writes
+     * @param task    the work
+     * @param retired run instead of {@code task} when the entity is gone; may be {@code null}
+     * @return the task, never {@code null}
+     */
+    ScheduledTask runFor(Entity entity, Consumer<ScheduledTask> task, Runnable retired);
 
-    /** Runs {@code task} on the main thread repeatedly until cancelled or this generation stops. */
-    BukkitTask runTaskTimer(Runnable task, long delayTicks, long periodTicks);
+    /**
+     * Runs {@code task} off every tick thread, now.
+     *
+     * @param task the work
+     * @return the task, never {@code null}
+     */
+    ScheduledTask runAsync(Consumer<ScheduledTask> task);
 
-    /** Runs {@code task} off the main thread repeatedly until cancelled or this generation stops. */
-    BukkitTask runTaskTimerAsynchronously(Runnable task, long delayTicks, long periodTicks);
+    /**
+     * Runs {@code task} off every tick thread repeatedly until cancelled or this generation stops.
+     *
+     * @param task         the work; it is handed its own task, so it can cancel itself
+     * @param initialDelay before the first run, at least 0
+     * @param period       between runs, more than 0
+     * @param unit         the unit of both
+     * @return the task, never {@code null}
+     */
+    ScheduledTask runAsyncAtFixedRate(Consumer<ScheduledTask> task, long initialDelay, long period, TimeUnit unit);
 }

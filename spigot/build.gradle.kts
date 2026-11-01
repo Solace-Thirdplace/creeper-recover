@@ -55,12 +55,12 @@ java {
 repositories {
     mavenCentral()
 
-    maven("https://hub.spigotmc.org/nexus/content/repositories/snapshots/")
+    maven("https://repo.papermc.io/repository/maven-public/")
 }
 
 dependencies {
-    // Bukkit API and the JDK only: no bStats, no Lombok, no annotations, and no :common.
-    compileOnly("org.spigotmc:spigot-api:" + findProperty("spigot_version"))
+    // Paper API and the JDK only: no bStats, no Lombok, no annotations, and no :common.
+    compileOnly("io.papermc.paper:paper-api:" + findProperty("paper_version"))
 }
 
 tasks.jar {

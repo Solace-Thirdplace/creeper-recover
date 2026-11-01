@@ -4,19 +4,23 @@ package de.rafael.plugins.creeper.recover.shell;
 // Database pools, PlaceholderAPI and listener pruning are left out; the tracking and teardown
 // rules are the same. Keep behaviour in step with the original when either side changes.
 
-import org.bukkit.Bukkit;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import org.bukkit.Location;
 import org.bukkit.command.CommandExecutor;
+import org.bukkit.entity.Entity;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitScheduler;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -30,10 +34,10 @@ import java.util.logging.Logger;
 public final class ShellContext implements CreeperShellContext {
 
     /**
-     * Growth in tracked tasks since the last sweep that triggers the next one. A recovery timer
-     * hops back to the main thread with a one-shot {@code runTask} for every block it restores, so
-     * without pruning a long-lived generation would track one finished task per block ever
-     * recovered. A growth allowance rather than a fixed size keeps the sweep rare even while many
+     * Growth in tracked tasks since the last sweep that triggers the next one. Every debug message
+     * goes to each online player through that player's scheduler, and every dragon hold check hops
+     * to its region, so without pruning a long-lived generation would track one finished task per
+     * hop it ever made. A growth allowance rather than a fixed size keeps the sweep rare even while many
      * hops are genuinely pending.
      */
     private static final int TASK_PRUNE_GROWTH = 64;
@@ -44,7 +48,7 @@ public final class ShellContext implements CreeperShellContext {
     private final BooleanSupplier swapping;
 
     private final Registrations<Listener> listeners = new Registrations<>(HandlerList::unregisterAll);
-    private final Registrations<BukkitTask> tasks = new Registrations<>(BukkitTask::cancel);
+    private final Registrations<ScheduledTask> tasks = new Registrations<>(ScheduledTask::cancel);
     private final Registrations<CommandRelay> boundCommands = new Registrations<>(CommandRelay::unbind);
     private final Registrations<Runnable> closeouts = new Registrations<>(Runnable::run);
 
@@ -137,49 +141,78 @@ public final class ShellContext implements CreeperShellContext {
     }
 
     @Override
-    public BukkitTask runTask(Runnable task) {
-        return schedule(scheduler -> scheduler.runTask(plugin, task));
+    public ScheduledTask runAt(Location location, Consumer<ScheduledTask> task) {
+        Objects.requireNonNull(location, "location");
+        Objects.requireNonNull(task, "task");
+        return schedule(() -> plugin.getServer().getRegionScheduler().run(plugin, location, task));
     }
 
     @Override
-    public BukkitTask runTaskAsynchronously(Runnable task) {
-        return schedule(scheduler -> scheduler.runTaskAsynchronously(plugin, task));
+    public boolean runAtUntracked(Location location, Runnable task) {
+        Objects.requireNonNull(location, "location");
+        Objects.requireNonNull(task, "task");
+        if (!plugin.isEnabled()) {
+            return false;
+        }
+        try {
+            plugin.getServer().getRegionScheduler().execute(plugin, location, task);
+            return true;
+        } catch (IllegalPluginAccessException | IllegalStateException | IllegalArgumentException refused) {
+            return false;
+        }
     }
 
     @Override
-    public BukkitTask runTaskLater(Runnable task, long delayTicks) {
-        return schedule(scheduler -> scheduler.runTaskLater(plugin, task, delayTicks));
-    }
-
-    @Override
-    public BukkitTask runTaskLaterAsynchronously(Runnable task, long delayTicks) {
-        return schedule(scheduler -> scheduler.runTaskLaterAsynchronously(plugin, task, delayTicks));
-    }
-
-    @Override
-    public BukkitTask runTaskTimer(Runnable task, long delayTicks, long periodTicks) {
-        return schedule(scheduler -> scheduler.runTaskTimer(plugin, task, delayTicks, periodTicks));
-    }
-
-    @Override
-    public BukkitTask runTaskTimerAsynchronously(Runnable task, long delayTicks, long periodTicks) {
-        return schedule(scheduler -> scheduler.runTaskTimerAsynchronously(plugin, task, delayTicks, periodTicks));
-    }
-
-    /**
-     * Schedules through Bukkit and tracks the result, or returns a {@link RetiredTask} when this
-     * generation is no longer running. The catch covers the shutdown race where Bukkit refuses a
-     * task from a plugin that is being disabled.
-     */
-    private BukkitTask schedule(Scheduling scheduling) {
+    public ScheduledTask runFor(Entity entity, Consumer<ScheduledTask> task, Runnable retired) {
+        Objects.requireNonNull(entity, "entity");
+        Objects.requireNonNull(task, "task");
         if (!isRunning()) {
             return new RetiredTask(plugin);
         }
-        BukkitTask scheduled;
-        try {
-            scheduled = scheduling.on(Bukkit.getScheduler());
-        } catch (IllegalStateException | IllegalArgumentException schedulerRefused) {
+        ScheduledTask scheduled = schedule(() -> entity.getScheduler().run(plugin, task, retired));
+        if (scheduled == null) {
+            // Paper's entity scheduler returns null when the entity is already removed.
+            if (retired != null) {
+                retired.run();
+            }
             return new RetiredTask(plugin);
+        }
+        return scheduled;
+    }
+
+    @Override
+    public ScheduledTask runAsync(Consumer<ScheduledTask> task) {
+        Objects.requireNonNull(task, "task");
+        return schedule(() -> plugin.getServer().getAsyncScheduler().runNow(plugin, task));
+    }
+
+    @Override
+    public ScheduledTask runAsyncAtFixedRate(Consumer<ScheduledTask> task, long initialDelay, long period,
+                                             TimeUnit unit) {
+        Objects.requireNonNull(task, "task");
+        Objects.requireNonNull(unit, "unit");
+        return schedule(() -> plugin.getServer().getAsyncScheduler()
+                .runAtFixedRate(plugin, task, initialDelay, period, unit));
+    }
+
+    /**
+     * Schedules through Paper and tracks the result, or returns a {@link RetiredTask} when this
+     * generation is no longer running. The catch covers the shutdown race where the server refuses
+     * a task from a plugin that is being disabled. Returns {@code null} only when the scheduler
+     * itself did (the entity scheduler, for an entity that is already removed).
+     */
+    private ScheduledTask schedule(Supplier<ScheduledTask> scheduling) {
+        if (!isRunning()) {
+            return new RetiredTask(plugin);
+        }
+        ScheduledTask scheduled;
+        try {
+            scheduled = scheduling.get();
+        } catch (IllegalPluginAccessException | IllegalStateException | IllegalArgumentException schedulerRefused) {
+            return new RetiredTask(plugin);
+        }
+        if (scheduled == null) {
+            return null;
         }
         pruneTasksIfDue();
         if (!tasks.track(scheduled)) {
@@ -201,11 +234,13 @@ public final class ShellContext implements CreeperShellContext {
         }
     }
 
-    /** Whether a scheduled task could still run: queued or executing right now. */
-    private static boolean isPending(BukkitTask task) {
-        BukkitScheduler scheduler = Bukkit.getScheduler();
-        int id = task.getTaskId();
-        return scheduler.isQueued(id) || scheduler.isCurrentlyRunning(id);
+    /**
+     * Whether a scheduled task could still run: waiting for its (next) run, or running right now.
+     * A repeating task sits in {@code IDLE} between runs, so it stays tracked.
+     */
+    private static boolean isPending(ScheduledTask task) {
+        ScheduledTask.ExecutionState state = task.getExecutionState();
+        return state == ScheduledTask.ExecutionState.IDLE || state == ScheduledTask.ExecutionState.RUNNING;
     }
 
     /**
@@ -229,10 +264,5 @@ public final class ShellContext implements CreeperShellContext {
             plugin.getLogger().log(Level.WARNING,
                     "CreeperRecover could not release a " + kind + " while stopping its core", failure);
         }
-    }
-
-    @FunctionalInterface
-    private interface Scheduling {
-        BukkitTask on(BukkitScheduler scheduler);
     }
 }

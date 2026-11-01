@@ -43,9 +43,15 @@ import de.rafael.plugins.creeper.recover.common.classes.Explosion;
 import de.rafael.plugins.creeper.recover.common.classes.list.BlockList;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Hanging;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.inventory.InventoryHolder;
+
+import java.util.HashSet;
+import java.util.Set;
 
 public class EntityExplodeListener implements Listener {
 
@@ -91,7 +97,30 @@ public class EntityExplodeListener implements Listener {
             return;
         }
 
+        // A core that is stopping for a swap leaves the explosion to vanilla, as when no core is
+        // loaded: it must not empty containers or clear blocks it will never put back.
+        if (CreeperPlugin.instance().explosionManager().isStopping()) {
+            return;
+        }
+
         if (CreeperPlugin.instance().configManager().usePlugin(event)) {
+            // Blocks that hold items stay standing: putting a container back never brought its
+            // contents back reliably, so it isn't blown up at all. ExplosionEntityListener does
+            // the same for item frames and armour stands.
+            keepHangingSupports(event);
+            int storageKept = 0;
+            var storage = event.blockList().iterator();
+            while (storage.hasNext()) {
+                if (storage.next().getState(false) instanceof InventoryHolder) {
+                    storage.remove();
+                    storageKept++;
+                }
+            }
+            if (storageKept > 0) {
+                CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
+                        "Kept %d storage blocks out of the explosion", storageKept));
+            }
+
             var blocks = new BlockList(event.blockList());
 
             CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
@@ -100,8 +129,6 @@ public class EntityExplodeListener implements Listener {
                     event.getLocation().toString(),
                     blocks.blocks().size()));
 
-            // Disable damage by explosion
-            event.setYield(100);
             int originalBlockCount = blocks.blocks().size();
 
             // Remove blacklisted blocks from recovery (they get destroyed but won't be
@@ -118,9 +145,15 @@ public class EntityExplodeListener implements Listener {
                         filteredBlockCount));
             }
 
-            // Store blocks
-            CreeperPlugin.instance().explosionManager().handle(
-                    new Explosion(event.getLocation().clone(), blocks, event.getEntity()));
+            // Store blocks. The explosion is only built (saving and emptying containers) if the
+            // core takes it; on Folia it can start stopping between the check above and here.
+            if (!CreeperPlugin.instance().explosionManager().handle(
+                    () -> new Explosion(event.getLocation().clone(), blocks, event.getEntity()))) {
+                return;
+            }
+
+            // Disable damage by explosion
+            event.setYield(100);
 
             CreeperPlugin.instance().configManager().sendDebugMessage(String.format(
                     "Started recovery process for %d blocks",
@@ -134,4 +167,21 @@ public class EntityExplodeListener implements Listener {
         }
     }
 
+
+    /**
+     * The blocks item frames and paintings hang on stay too. Without its wall a frame falls off,
+     * and it also falls when the repair brings the wall back, dropping what it held.
+     */
+    private static void keepHangingSupports(EntityExplodeEvent event) {
+        var center = event.getLocation();
+        double reach = 2;
+        for (Block block : event.blockList()) {
+            reach = Math.max(reach, block.getLocation().add(0.5, 0.5, 0.5).distance(center) + 2);
+        }
+        Set<Block> supports = new HashSet<>();
+        for (Entity entity : center.getWorld().getNearbyEntities(center, reach, reach, reach, entity -> entity instanceof Hanging)) {
+            supports.add(entity.getLocation().getBlock().getRelative(((Hanging) entity).getAttachedFace()));
+        }
+        event.blockList().removeAll(supports);
+    }
 }

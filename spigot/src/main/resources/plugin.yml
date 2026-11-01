@@ -2,6 +2,7 @@ name: "CreeperRecover"
 version: "1.1.4"
 main: "de.rafael.plugins.creeper.recover.CreeperRecover"
 api-version: "1.21"
+folia-supported: true
 description: "Recovers all destroyed blocks by Creeper or other Entities"
 author: "HttpRafa"
 commands:

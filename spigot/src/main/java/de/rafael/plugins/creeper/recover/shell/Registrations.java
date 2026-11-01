@@ -25,7 +25,7 @@ import java.util.function.Predicate;
  * registration that survives its core is a leaked classloader plus a handler running twice, and
  * both symptoms surface hours later on a live server, where they are nearly impossible to
  * attribute. That makes it exactly the code worth testing directly — and it cannot be tested
- * directly if it is welded to {@code Listener}, {@code BukkitTask} and a running server. So the
+ * directly if it is welded to {@code Listener}, {@code ScheduledTask} and a running server. So the
  * rules live here, over an opaque {@code T} with a disposer function, and {@link ShellContext}
  * supplies the Bukkit-shaped instantiations.
  *
@@ -46,10 +46,9 @@ import java.util.function.Predicate;
  *       the ones a caller-supplied predicate says are already finished.</li>
  * </ul>
  *
- * <p>Not thread-safe by design intent, but synchronized anyway: registrations happen on the main
- * thread and teardown happens on the main thread, yet CreeperRecover's recovery timers run off the
- * main thread and hop back onto it with {@code runTask} for every block they restore. A monitor on a handful of list operations costs nothing at this frequency and removes a
- * whole class of "it only happens under load" bug.
+ * <p>Synchronized, because registrations come from many threads: CreeperRecover's recovery timers
+ * run off the tick threads, and on Folia every region thread that sees an explosion schedules from
+ * its own thread. A monitor on a handful of list operations costs nothing at this frequency.
  *
  * @param <T> the kind of registration being tracked
  */
@@ -90,7 +89,7 @@ public final class Registrations<T> {
      *
      * <p>Only meaningful for registrations that can finish on their own — a scheduler task that
      * has already run. Without this, a long-lived core generation accumulates one dead
-     * {@code BukkitTask} per menu click, and teardown then walks thousands of them to cancel
+     * {@code ScheduledTask} per hop, and teardown then walks thousands of them to cancel
      * nothing.
      *
      * @param stillRelevant answers whether an entry should stay tracked

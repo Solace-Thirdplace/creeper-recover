@@ -4,13 +4,13 @@ package de.rafael.plugins.creeper.recover.shell;
 // (com.thirdplace.tweaks.shell). Renamed into this package rather than depended on: the
 // repositories share no build. Keep behaviour in step with the original when either side changes.
 
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.util.Objects;
 
 /**
- * The {@link BukkitTask} handed back when a retired core generation tries to schedule something.
+ * The {@link ScheduledTask} handed back when a retired core generation tries to schedule something.
  *
  * <p>Ported from Arcadia's {@code paper-market} shell.
  *
@@ -28,13 +28,11 @@ import java.util.Objects;
  * shell plugin so anything inspecting the owner sees something sane, and does nothing when
  * cancelled. Code written against the live case works unchanged against the dead one.
  *
- * <p>The task id is {@code -1}, the value Bukkit itself uses for "not a real task", so it can
- * never collide with a scheduled id or be mistaken for one in a log line.
+ * <p>It used to stand in for a {@code BukkitTask}. The Folia port moved the shell to Paper's
+ * region, entity and async schedulers, which hand out {@link ScheduledTask}s, so it now stands in
+ * for one of those.
  */
-public final class RetiredTask implements BukkitTask {
-
-    /** Bukkit's own sentinel for an id that was never issued. */
-    private static final int NO_TASK_ID = -1;
+public final class RetiredTask implements ScheduledTask {
 
     private final Plugin owner;
 
@@ -48,31 +46,23 @@ public final class RetiredTask implements BukkitTask {
     }
 
     @Override
-    public int getTaskId() {
-        return NO_TASK_ID;
-    }
-
-    @Override
-    public Plugin getOwner() {
+    public Plugin getOwningPlugin() {
         return owner;
     }
 
-    /**
-     * Reports sync, because CreeperRecover's block placement is overwhelmingly main-thread and a caller
-     * branching on this for a task that will never run should take the boring path.
-     */
     @Override
-    public boolean isSync() {
-        return true;
+    public boolean isRepeatingTask() {
+        return false;
     }
 
     @Override
-    public boolean isCancelled() {
-        return true;
-    }
-
-    @Override
-    public void cancel() {
+    public CancelledState cancel() {
         // Already cancelled by construction — the whole point of this class.
+        return CancelledState.CANCELLED_ALREADY;
+    }
+
+    @Override
+    public ExecutionState getExecutionState() {
+        return ExecutionState.CANCELLED;
     }
 }
