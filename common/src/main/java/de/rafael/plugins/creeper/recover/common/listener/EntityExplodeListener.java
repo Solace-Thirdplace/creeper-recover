@@ -43,10 +43,15 @@ import de.rafael.plugins.creeper.recover.common.classes.Explosion;
 import de.rafael.plugins.creeper.recover.common.classes.list.BlockList;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.Hanging;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.inventory.InventoryHolder;
+
+import java.util.HashSet;
+import java.util.Set;
 
 public class EntityExplodeListener implements Listener {
 
@@ -102,6 +107,7 @@ public class EntityExplodeListener implements Listener {
             // Blocks that hold items stay standing: putting a container back never brought its
             // contents back reliably, so it isn't blown up at all. ExplosionEntityListener does
             // the same for item frames and armour stands.
+            keepHangingSupports(event);
             int storageKept = 0;
             var storage = event.blockList().iterator();
             while (storage.hasNext()) {
@@ -161,4 +167,21 @@ public class EntityExplodeListener implements Listener {
         }
     }
 
+
+    /**
+     * The blocks item frames and paintings hang on stay too. Without its wall a frame falls off,
+     * and it also falls when the repair brings the wall back, dropping what it held.
+     */
+    private static void keepHangingSupports(EntityExplodeEvent event) {
+        var center = event.getLocation();
+        double reach = 2;
+        for (Block block : event.blockList()) {
+            reach = Math.max(reach, block.getLocation().add(0.5, 0.5, 0.5).distance(center) + 2);
+        }
+        Set<Block> supports = new HashSet<>();
+        for (Entity entity : center.getWorld().getNearbyEntities(center, reach, reach, reach, entity -> entity instanceof Hanging)) {
+            supports.add(entity.getLocation().getBlock().getRelative(((Hanging) entity).getAttachedFace()));
+        }
+        event.blockList().removeAll(supports);
+    }
 }
